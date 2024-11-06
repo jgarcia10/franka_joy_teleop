@@ -3,15 +3,11 @@ import copy
 
 import rclpy
 from rclpy.node import Node
-from rclpy.publisher import Publisher
-from rclpy.subscription import Subscription
-from rclpy.client import Client
-from rclpy.qos import qos_profile_system_default
-
-from nav_msgs.msg import Odometry
-from std_srvs.srv import Empty
+from rclpy.action import ActionClient
+from moveit_msgs.action import MoveGroup
+from geometry_msgs.msg import PoseStamped, Quaternion
 from sensor_msgs.msg import Joy
-from geometry_msgs.msg import Quaternion
+from std_srvs.srv import Empty
 from tf_transformations import euler_from_quaternion, quaternion_from_euler
 
 # Helper functions
@@ -35,45 +31,28 @@ def rpy2quat(euler, input_in_degrees=False):
     return Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
 
 class PandaTeleop(Node):
-
     def __init__(self):
         super().__init__('panda_teleop_control')
-        self.get_logger().info('Initializing Panda Teleop Node')
+        self.get_logger().info('Initializing PandaTeleop node.')
 
-        # Initialize parameters and variables
+        # Declare parameters
         self.declare_parameters(
             namespace='',
             parameters=[
                 ('base_frame', 'panda_link0'),
                 ('end_effector_frame', 'panda_hand'),
-                ('end_effector_target_topic', 'end_effector_target_pose'),
-                ('end_effector_pose_topic', '/end_effector_pose')
             ]
         )
 
-        # Create end effector target publisher
-        self._end_effector_target_publisher: Publisher = self.create_publisher(
-            Odometry,
-            self.get_parameter('end_effector_target_topic').get_parameter_value().string_value,
-            qos_profile_system_default
-        )
-        self.get_logger().info('End effector target publisher created')
-        # Create end effector pose subscriber
-        self._end_effector_pose_subscriber: Subscription = self.create_subscription(
-            Odometry,
-            self.get_parameter('end_effector_pose_topic').get_parameter_value().string_value,
-            self.callback_end_effector_odom,
-            10
-        )
-        self.get_logger().info('End effector pose subscriber created')
         # Create joystick subscriber
         self._joy_subscriber = self.create_subscription(
             Joy,
-            '/joy',
+            'joy',
             self.callback_joy,
-            qos_profile_system_default
+            10
         )
-        self.get_logger().info('Joystick subscriber created')
+        self.get_logger().info('Created joystick subscriber.')
+
         # Create a service client for actuating the gripper
         self._actuate_gripper_client: Client = self.create_client(Empty, 'actuate_gripper')
 
@@ -81,38 +60,33 @@ class PandaTeleop(Node):
         self.joy_axes = []
         self.joy_buttons = []
 
-        # Initialize end effector target and pose
-        self._end_effector_target_origin: Odometry = Odometry()
-        self._end_effector_target_origin.pose.pose.position.x = 0.3070
-        self._end_effector_target_origin.pose.pose.position.y = 0.0
-        self._end_effector_target_origin.pose.pose.position.z = 0.4872
-        self._end_effector_target_origin.pose.pose.orientation = Quaternion(
+        # Initialize the target pose
+        self._end_effector_target: PoseStamped = PoseStamped()
+        self._end_effector_target.header.frame_id = self.get_parameter('base_frame').get_parameter_value().string_value
+        self._end_effector_target.pose.position.x = 0.3070
+        self._end_effector_target.pose.position.y = 0.0
+        self._end_effector_target.pose.position.z = 0.4872
+        self._end_effector_target.pose.orientation = Quaternion(
             x=-0.00014, y=0.7071, z=0.00014, w=0.7071)
-        self._end_effector_target_origin.header.frame_id = self.get_parameter('base_frame').get_parameter_value().string_value
-        self._end_effector_target_origin.child_frame_id = self.get_parameter('end_effector_frame').get_parameter_value().string_value
-        self._end_effector_target_origin.header.stamp = self.get_clock().now().to_msg()
 
-        self._end_effector_target: Odometry = copy.deepcopy(self._end_effector_target_origin)
-        self._end_effector_pose: Odometry = copy.deepcopy(self._end_effector_target)
-
-        # Publish the initial end effector target
-        self._end_effector_target_publisher.publish(self._end_effector_target)
+        self._end_effector_target_origin = copy.deepcopy(self._end_effector_target)
 
         # Translation and rotation limits
         self._translation_limits = [[0.0, 1.0], [-1.0, 1.0], [0.0, 1.0]]  # x, y, z in meters
         self._rotation_limits = [[-90., 90.], [-90., 90.], [-90., 90.]]    # roll, pitch, yaw in degrees
 
+        # Initialize MoveGroup action client
+        self._action_client = ActionClient(self, MoveGroup, '/move_group')
+        self.get_logger().info('MoveGroup action client initialized.')
+
         # Create timer for processing inputs
         self.timer = self.create_timer(0.1, self.timer_callback)  # 10 Hz
-
-    def callback_end_effector_odom(self, odom: Odometry):
-        self._end_effector_pose = odom
 
     def callback_joy(self, joy_msg):
         self.joy_axes = joy_msg.axes
         self.joy_buttons = joy_msg.buttons
-        self.get_logger().info(f"Joystick axes: {self.joy_axes}")
-        self.get_logger().info(f"Joystick buttons: {self.joy_buttons}")
+        self.get_logger().debug(f"Joystick axes: {self.joy_axes}")
+        self.get_logger().debug(f"Joystick buttons: {self.joy_buttons}")
 
     def timer_callback(self):
         self.process_joy_input()
@@ -121,15 +95,15 @@ class PandaTeleop(Node):
         if not self.joy_axes:
             return  # No joystick data yet
 
-        # Axes mapping (adjust indices if necessary)
-        left_stick_horizontal = self.joy_axes[0]  # Left stick horizontal (left/right)
-        left_stick_vertical = self.joy_axes[1]    # Left stick vertical (forward/backward)
-        right_stick_horizontal = self.joy_axes[3] # Right stick horizontal (yaw rotation)
-        right_stick_vertical = self.joy_axes[4]   # Right stick vertical (up/down)
+        # Axes mapping
+        left_stick_horizontal = self.joy_axes[0]
+        left_stick_vertical = self.joy_axes[1]
+        right_stick_horizontal = self.joy_axes[3]
+        right_stick_vertical = self.joy_axes[4]
 
-        # Buttons mapping (adjust indices if necessary)
-        a_button = self.joy_buttons[0]  # A button to open/close gripper
-        b_button = self.joy_buttons[1]  # B button to return to home position
+        # Buttons mapping
+        a_button = self.joy_buttons[0]  # Gripper
+        b_button = self.joy_buttons[1]  # Home position
 
         # Scaling factors
         translation_speed = 0.01  # meters per update
@@ -144,48 +118,123 @@ class PandaTeleop(Node):
         delta_yaw = right_stick_horizontal * rotation_speed
 
         # Get current orientation in Euler angles
-        euler_target = quat2rpy(self._end_effector_target.pose.pose.orientation, degrees=True)
+        euler_target = quat2rpy(self._end_effector_target.pose.orientation, degrees=True)
 
         # Update position
-        self._end_effector_target.pose.pose.position.x += delta_x
-        self._end_effector_target.pose.pose.position.y += delta_y
-        self._end_effector_target.pose.pose.position.z += delta_z
+        self._end_effector_target.pose.position.x += delta_x
+        self._end_effector_target.pose.position.y += delta_y
+        self._end_effector_target.pose.position.z += delta_z
 
         # Update orientation
         euler_target[2] += delta_yaw  # Yaw
 
         # Ensure positions and orientations are within limits
-        self._end_effector_target.pose.pose.position.x = np.clip(
-            self._end_effector_target.pose.pose.position.x,
+        self._end_effector_target.pose.position.x = np.clip(
+            self._end_effector_target.pose.position.x,
             self._translation_limits[0][0],
             self._translation_limits[0][1]
         )
-        self._end_effector_target.pose.pose.position.y = np.clip(
-            self._end_effector_target.pose.pose.position.y,
+        self._end_effector_target.pose.position.y = np.clip(
+            self._end_effector_target.pose.position.y,
             self._translation_limits[1][0],
             self._translation_limits[1][1]
         )
-        self._end_effector_target.pose.pose.position.z = np.clip(
-            self._end_effector_target.pose.pose.position.z,
+        self._end_effector_target.pose.position.z = np.clip(
+            self._end_effector_target.pose.position.z,
             self._translation_limits[2][0],
             self._translation_limits[2][1]
         )
 
         # Convert back to quaternion
         quat = rpy2quat(euler_target, input_in_degrees=True)
-        self._end_effector_target.pose.pose.orientation = quat
+        self._end_effector_target.pose.orientation = quat
 
         # Handle buttons
         if a_button:
-            # Open/Close gripper
             self.actuate_gripper()
 
         if b_button:
-            # Return to home position
             self._home()
+            return  # Don't send goal during homing
 
-        # Publish the updated target
-        self._publish()
+        # Send the target pose to MoveIt
+        self.send_goal_to_moveit()
+
+    def send_goal_to_moveit(self):
+        # Ensure the action server is available
+        if not self._action_client.wait_for_server(timeout_sec=1.0):
+            self.get_logger().error('MoveGroup action server not available')
+            return
+
+        # Create the MoveGroup goal
+        goal_msg = MoveGroup.Goal()
+        goal_msg.request.workspace_parameters.header.frame_id = self._end_effector_target.header.frame_id
+        goal_msg.request.goal_constraints.append(self.create_position_orientation_constraints())
+        goal_msg.request.num_planning_attempts = 5
+        goal_msg.request.allowed_planning_time = 2.0
+        goal_msg.request.max_velocity_scaling_factor = 0.1
+        goal_msg.request.max_acceleration_scaling_factor = 0.1
+
+        # Send the goal
+        self._send_goal_future = self._action_client.send_goal_async(goal_msg)
+        self._send_goal_future.add_done_callback(self.goal_response_callback)
+
+    def create_position_orientation_constraints(self):
+        from moveit_msgs.msg import Constraints, PositionConstraint, OrientationConstraint
+        from shape_msgs.msg import SolidPrimitive
+
+        constraints = Constraints()
+
+        # Position constraint
+        position_constraint = PositionConstraint()
+        position_constraint.header.frame_id = self._end_effector_target.header.frame_id
+        position_constraint.link_name = self.get_parameter('end_effector_frame').get_parameter_value().string_value
+        position_constraint.target_point_offset.x = 0.0
+        position_constraint.target_point_offset.y = 0.0
+        position_constraint.target_point_offset.z = 0.0
+
+        # Define the bounding volume for position constraint
+        bounding_volume = SolidPrimitive()
+        bounding_volume.type = SolidPrimitive.BOX
+        bounding_volume.dimensions = [0.001, 0.001, 0.001]  # Small box around the target
+
+        position_constraint.constraint_region.primitives.append(bounding_volume)
+        position_constraint.constraint_region.primitive_poses.append(self._end_effector_target.pose)
+        position_constraint.weight = 1.0
+
+        constraints.position_constraints.append(position_constraint)
+
+        # Orientation constraint
+        orientation_constraint = OrientationConstraint()
+        orientation_constraint.header.frame_id = self._end_effector_target.header.frame_id
+        orientation_constraint.link_name = self.get_parameter('end_effector_frame').get_parameter_value().string_value
+        orientation_constraint.orientation = self._end_effector_target.pose.orientation
+        orientation_constraint.absolute_x_axis_tolerance = 0.01
+        orientation_constraint.absolute_y_axis_tolerance = 0.01
+        orientation_constraint.absolute_z_axis_tolerance = 0.01
+        orientation_constraint.weight = 1.0
+
+        constraints.orientation_constraints.append(orientation_constraint)
+
+        return constraints
+
+    def goal_response_callback(self, future):
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self.get_logger().error('Goal rejected by MoveGroup action server')
+            return
+
+        self.get_logger().info('Goal accepted by MoveGroup action server')
+
+        self._get_result_future = goal_handle.get_result_async()
+        self._get_result_future.add_done_callback(self.get_result_callback)
+
+    def get_result_callback(self, future):
+        result = future.result().result
+        if result.error_code.val == result.error_code.SUCCESS:
+            self.get_logger().info('MoveGroup action succeeded!')
+        else:
+            self.get_logger().error(f'MoveGroup action failed with error code: {result.error_code.val}')
 
     def actuate_gripper(self):
         # Call the service to actuate the gripper
@@ -194,30 +243,33 @@ class PandaTeleop(Node):
             return
 
         future = self._actuate_gripper_client.call_async(Empty.Request())
-        rclpy.spin_until_future_complete(self, future)
-        if future.result() is not None:
+        future.add_done_callback(self.gripper_response_callback)
+
+    def gripper_response_callback(self, future):
+        try:
+            response = future.result()
             self.get_logger().info('Gripper actuated successfully')
-        else:
-            self.get_logger().error('Failed to actuate gripper')
+        except Exception as e:
+            self.get_logger().error(f'Failed to actuate gripper: {e}')
 
     def _home(self):
+        # Set the target pose to the home position
         self._end_effector_target = copy.deepcopy(self._end_effector_target_origin)
         self._end_effector_target.header.stamp = self.get_clock().now().to_msg()
-        self._publish()
-
-    def _publish(self):
-        self._end_effector_target.header.stamp = self.get_clock().now().to_msg()
-        self._end_effector_target_publisher.publish(self._end_effector_target)
+        # Send the target pose to MoveIt
+        self.send_goal_to_moveit()
 
 def main(args=None):
     rclpy.init(args=args)
     node = PandaTeleop()
+    node.get_logger().info('PandaTeleop node has been created.')
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
-    node.destroy_node()
-    rclpy.shutdown()
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 
 if __name__ == '__main__':
     main()
