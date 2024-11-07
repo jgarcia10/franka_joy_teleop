@@ -76,7 +76,7 @@ class PandaTeleop(Node):
         self._actuate_gripper_client = self.create_client(Empty, 'actuate_gripper')
 
         # Initialize MoveGroup action client
-        self._action_client = ActionClient(self, MoveGroup, 'move_group')
+        self._action_client = ActionClient(self, MoveGroup, 'move_action')
         self.get_logger().info('MoveGroup action client initialized.')
 
         # Translation and rotation limits
