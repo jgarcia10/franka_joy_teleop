@@ -89,7 +89,7 @@ class PandaTeleop(Node):
         self._rotation_limits = [[-180., 180.], [-180., 180.], [-180., 180.]]    # roll, pitch, yaw in degrees
 
         # Initialize MoveGroup action client
-        self._action_client = ActionClient(self, MoveGroup, 'move_group')
+        self._action_client = ActionClient(self, MoveGroup, 'move_action')
         self.get_logger().info('MoveGroup action client initialized.')
 
         # Create timer for processing inputs
