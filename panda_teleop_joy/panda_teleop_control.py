@@ -71,7 +71,7 @@ class PandaTeleop(Node):
         self.get_logger().info('Created joystick subscriber.')
 
         # Create a service client for actuating the gripper
-        self._actuate_gripper_client: ActionClient = self.create_client(Empty, 'actuate_gripper')
+        self._actuate_gripper_client = self.create_client(Empty, 'actuate_gripper')
 
         # Initialize MoveGroup action client
         self._action_client = ActionClient(self, MoveGroup, 'move_action')
@@ -134,15 +134,15 @@ class PandaTeleop(Node):
         if not self.joy_axes:
             return  # No joystick data yet
 
-        # Axes mapping
-        left_stick_horizontal = self.joy_axes[0]
-        left_stick_vertical = self.joy_axes[1]
-        right_stick_horizontal = self.joy_axes[3]
-        right_stick_vertical = self.joy_axes[4]
+        # Axes mapping (adjust indices if necessary)
+        left_stick_horizontal = self.joy_axes[0]  # Left stick horizontal (left/right)
+        left_stick_vertical = self.joy_axes[1]    # Left stick vertical (forward/backward)
+        right_stick_horizontal = self.joy_axes[3] # Right stick horizontal (yaw rotation)
+        right_stick_vertical = self.joy_axes[4]   # Right stick vertical (up/down)
 
-        # Buttons mapping
-        a_button = self.joy_buttons[0]  # Gripper
-        b_button = self.joy_buttons[1]  # Home position
+        # Buttons mapping (adjust indices if necessary)
+        a_button = self.joy_buttons[0]  # A button to open/close gripper
+        b_button = self.joy_buttons[1]  # B button to return to home position
 
         # Scaling factors
         translation_speed = 0.01  # meters per update
@@ -218,22 +218,45 @@ class PandaTeleop(Node):
 
     def send_goal_to_moveit(self):
         # Ensure the action server is available
-        if not self._action_client.wait_for_server(timeout_sec=1.0):
-            self.get_logger().error('MoveGroup action server not available')
+        if not self._action_client.wait_for_server(timeout_sec=5.0):
+            self.get_logger().error('MoveGroup action server not available. Ensure that MoveIt is running.')
             return
+
+        # Define the planning group name (e.g., 'panda_arm')
+        group_name = self.get_parameter('group_name', 'panda_arm').value  # Replace 'panda_arm' if different
+
+        # Define the end effector name (e.g., 'panda_hand')
+        end_effector_name = self.get_parameter('end_effector_name', 'panda_hand').value  # Replace if different
 
         # Create the MoveGroup goal
         goal_msg = MoveGroup.Goal()
-        goal_msg.request.workspace_parameters.header.frame_id = self._end_effector_target.header.frame_id
-        goal_msg.request.goal_constraints.append(self.create_position_orientation_constraints())
-        goal_msg.request.num_planning_attempts = 5
-        goal_msg.request.allowed_planning_time = 2.0
-        goal_msg.request.max_velocity_scaling_factor = 0.1
-        goal_msg.request.max_acceleration_scaling_factor = 0.1
+        goal_msg.request.group_name = group_name
+        goal_msg.request.end_effector_name = end_effector_name
+
+        # Populate the MotionPlanRequest
+        goal_msg.request.motion_plan_request.group_name = group_name
+        goal_msg.request.motion_plan_request.num_planning_attempts = 5
+        goal_msg.request.motion_plan_request.allowed_planning_time = 5.0  # seconds
+        goal_msg.request.motion_plan_request.workspace_parameters.header.frame_id = self._end_effector_target.header.frame_id
+
+        # Define goal constraints
+        constraints = self.create_position_orientation_constraints()
+        goal_msg.request.motion_plan_request.goal_constraints.append(constraints)
+
+        # Optionally, define path constraints if needed
+        # goal_msg.request.motion_plan_request.path_constraints = your_path_constraints
+
+        # Set velocity and acceleration scaling factors
+        goal_msg.request.motion_plan_request.max_velocity_scaling_factor = 0.1
+        goal_msg.request.motion_plan_request.max_acceleration_scaling_factor = 0.1
+
+        # Optionally, set the planner ID (e.g., 'RRTConnectkConfigDefault')
+        # goal_msg.request.motion_plan_request.planner_id = 'RRTConnectkConfigDefault'
 
         # Send the goal
-        self._send_goal_future = self._action_client.send_goal_async(goal_msg)
-        self._send_goal_future.add_done_callback(self.goal_response_callback)
+        self.get_logger().info('Sending goal to MoveGroup...')
+        send_goal_future = self._action_client.send_goal_async(goal_msg)
+        send_goal_future.add_done_callback(self.goal_response_callback)
 
     def create_position_orientation_constraints(self):
         from moveit_msgs.msg import Constraints, PositionConstraint, OrientationConstraint
@@ -241,7 +264,7 @@ class PandaTeleop(Node):
 
         constraints = Constraints()
 
-        # Position constraint
+        # Position Constraint
         position_constraint = PositionConstraint()
         position_constraint.header.frame_id = self._end_effector_target.header.frame_id
         position_constraint.link_name = self.get_parameter('end_effector_frame').get_parameter_value().string_value
@@ -252,7 +275,7 @@ class PandaTeleop(Node):
         # Define the bounding volume for position constraint
         bounding_volume = SolidPrimitive()
         bounding_volume.type = SolidPrimitive.BOX
-        bounding_volume.dimensions = [0.01, 0.01, 0.01]  # Small box around the target
+        bounding_volume.dimensions = [0.01, 0.01, 0.01]  # 1cm cube
 
         position_constraint.constraint_region.primitives.append(bounding_volume)
         position_constraint.constraint_region.primitive_poses.append(self._end_effector_target.pose)
@@ -260,7 +283,7 @@ class PandaTeleop(Node):
 
         constraints.position_constraints.append(position_constraint)
 
-        # Orientation constraint
+        # Orientation Constraint
         orientation_constraint = OrientationConstraint()
         orientation_constraint.header.frame_id = self._end_effector_target.header.frame_id
         orientation_constraint.link_name = self.get_parameter('end_effector_frame').get_parameter_value().string_value
@@ -329,4 +352,3 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
-
