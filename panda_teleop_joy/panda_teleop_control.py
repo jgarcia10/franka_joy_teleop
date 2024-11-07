@@ -37,12 +37,14 @@ class PandaTeleop(Node):
         super().__init__('panda_teleop_control')
         self.get_logger().info('Initializing PandaTeleop node.')
 
-        # Declare parameters
+        # Declare parameters with default values
         self.declare_parameters(
             namespace='',
             parameters=[
-                ('base_frame', 'panda_link0'),        # Base frame of the robot
-                ('end_effector_frame', 'panda_hand'), # End-effector frame
+                ('base_frame', 'panda_link0'),          # Base frame of the robot
+                ('end_effector_frame', 'panda_hand'),   # End-effector frame
+                ('group_name', 'panda_arm'),            # Planning group name
+                ('end_effector_name', 'panda_hand'),    # End-effector name
             ]
         )
 
@@ -74,7 +76,7 @@ class PandaTeleop(Node):
         self._actuate_gripper_client = self.create_client(Empty, 'actuate_gripper')
 
         # Initialize MoveGroup action client
-        self._action_client = ActionClient(self, MoveGroup, 'move_action')
+        self._action_client = ActionClient(self, MoveGroup, 'move_group')
         self.get_logger().info('MoveGroup action client initialized.')
 
         # Translation and rotation limits
@@ -222,11 +224,9 @@ class PandaTeleop(Node):
             self.get_logger().error('MoveGroup action server not available. Ensure that MoveIt is running.')
             return
 
-        # Define the planning group name (e.g., 'panda_arm')
-        group_name = self.get_parameter('group_name', 'panda_arm').value  # Replace 'panda_arm' if different
-
-        # Define the end effector name (e.g., 'panda_hand')
-        end_effector_name = self.get_parameter('end_effector_name', 'panda_hand').value  # Replace if different
+        # Retrieve parameters
+        group_name = self.get_parameter('group_name').value            # 'panda_arm'
+        end_effector_name = self.get_parameter('end_effector_name').value  # 'panda_hand'
 
         # Create the MoveGroup goal
         goal_msg = MoveGroup.Goal()
@@ -267,7 +267,7 @@ class PandaTeleop(Node):
         # Position Constraint
         position_constraint = PositionConstraint()
         position_constraint.header.frame_id = self._end_effector_target.header.frame_id
-        position_constraint.link_name = self.get_parameter('end_effector_frame').get_parameter_value().string_value
+        position_constraint.link_name = self.get_parameter('end_effector_frame').value
         position_constraint.target_point_offset.x = 0.0
         position_constraint.target_point_offset.y = 0.0
         position_constraint.target_point_offset.z = 0.0
@@ -286,7 +286,7 @@ class PandaTeleop(Node):
         # Orientation Constraint
         orientation_constraint = OrientationConstraint()
         orientation_constraint.header.frame_id = self._end_effector_target.header.frame_id
-        orientation_constraint.link_name = self.get_parameter('end_effector_frame').get_parameter_value().string_value
+        orientation_constraint.link_name = self.get_parameter('end_effector_frame').value
         orientation_constraint.orientation = self._end_effector_target.pose.orientation
         orientation_constraint.absolute_x_axis_tolerance = 0.1
         orientation_constraint.absolute_y_axis_tolerance = 0.1
