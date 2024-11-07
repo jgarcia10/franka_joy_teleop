@@ -79,11 +79,6 @@ class PandaTeleop(Node):
         )
         self.get_logger().info('Created joystick subscriber.')
 
-        # Create a service client for actuating the gripper
-        self._actuate_gripper_client = self.create_client(Empty, 'actuate_gripper')
-        while not self._actuate_gripper_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info('Waiting for actuate_gripper service...')
-
         # Initialize pose origin
         self._end_effector_target_origin = PoseStamped()
 
@@ -219,10 +214,6 @@ class PandaTeleop(Node):
         quat = rpy2quat(euler_target, input_in_degrees=True)
         self._end_effector_target.pose.orientation = quat
 
-        # Handle buttons
-        if a_button:
-            self.actuate_gripper()
-
         if b_button:
             self._home()
             return  # Don't send goal during homing
@@ -319,16 +310,6 @@ class PandaTeleop(Node):
             self.get_logger().info('MoveGroup action succeeded!')
         else:
             self.get_logger().error(f'MoveGroup action failed with error code: {error_code}')
-
-    def actuate_gripper(self):
-        # Call the service to actuate the gripper
-        if not self._actuate_gripper_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().error('Gripper service not available')
-            return
-
-        request = Empty.Request()
-        future = self._actuate_gripper_client.call_async(request)
-        future.add_done_callback(self.gripper_response_callback)
 
     def gripper_response_callback(self, future):
         try:
