@@ -73,9 +73,6 @@ class PandaTeleop(Node):
         # Flag to check if we have received the current pose
         self.current_pose_received = False
 
-        # Get the current end-effector pose
-        self.get_current_end_effector_pose()
-
         # Check if the pose was received
         if not self.current_pose_received:
             self.get_logger().error('Could not obtain current end-effector pose. Exiting.')
@@ -96,30 +93,32 @@ class PandaTeleop(Node):
         self.timer = self.create_timer(0.1, self.timer_callback)  # 10 Hz
 
     def get_current_end_effector_pose(self):
-        try:
-            # Wait for the transform to become available
-            self.tf_buffer.can_transform(
-                self.get_parameter('base_frame').get_parameter_value().string_value,
-                self.get_parameter('end_effector_frame').get_parameter_value().string_value,
-                rclpy.time.Time(),
-                timeout=rclpy.duration.Duration(seconds=5.0)
-            )
+    try:
+        target_frame = self.get_parameter('base_frame').get_parameter_value().string_value
+        source_frame = self.get_parameter('end_effector_frame').get_parameter_value().string_value
+        now = rclpy.time.Time()
+        timeout = rclpy.duration.Duration(seconds=1.0)
+
+        # Check if the transform is available
+        if self.tf_buffer.can_transform(target_frame, source_frame, now, timeout):
             # Look up the transform
-            transform = self.tf_buffer.lookup_transform(
-                self.get_parameter('base_frame').get_parameter_value().string_value,
-                self.get_parameter('end_effector_frame').get_parameter_value().string_value,
-                rclpy.time.Time()
-            )
+            transform = self.tf_buffer.lookup_transform(target_frame, source_frame, now)
             # Convert the transform to a PoseStamped
+            self._end_effector_target.header.stamp = transform.header.stamp
             self._end_effector_target.pose.position.x = transform.transform.translation.x
             self._end_effector_target.pose.position.y = transform.transform.translation.y
             self._end_effector_target.pose.position.z = transform.transform.translation.z
             self._end_effector_target.pose.orientation = transform.transform.rotation
             self.current_pose_received = True
             self.get_logger().info('Current end-effector pose obtained from TF.')
-        except Exception as e:
-            self.get_logger().error(f'Failed to get current end-effector pose: {e}')
+        else:
+            self.get_logger().warn(f'Transform from {source_frame} to {target_frame} not yet available.')
             self.current_pose_received = False
+    except Exception as e:
+        self.get_logger().error(f'Failed to get current end-effector pose: {e}')
+        frames = self.tf_buffer.all_frames_as_string()
+        self.get_logger().debug(f'Available frames: {frames}')
+        self.current_pose_received = False
 
     def callback_joy(self, joy_msg):
         self.joy_axes = joy_msg.axes
