@@ -71,11 +71,18 @@ class PandaTeleop(Node):
         self.get_logger().info('Created joystick subscriber.')
 
         # Create a service client for actuating the gripper
-        self._actuate_gripper_client: Client = self.create_client(Empty, 'actuate_gripper')
+        self._actuate_gripper_client: ActionClient = self.create_client(Empty, 'actuate_gripper')
 
         # Initialize MoveGroup action client
-        self._action_client = ActionClient(self, MoveGroup, 'move_action')
+        self._action_client = ActionClient(self, MoveGroup, 'move_group')
         self.get_logger().info('MoveGroup action client initialized.')
+
+        # Translation and rotation limits
+        self._translation_limits = [[-1.0, 1.0], [-1.0, 1.0], [0.0, 1.5]]  # x, y, z in meters
+        self._rotation_limits = [[-180., 180.], [-180., 180.], [-180., 180.]]    # roll, pitch, yaw in degrees
+
+        # Initialize the target pose origin (will be set once current pose is received)
+        self._end_effector_target_origin = PoseStamped()
 
         # Create a timer for processing inputs and attempting to get the current pose
         self.timer = self.create_timer(0.1, self.timer_callback)  # Runs at 10 Hz
@@ -86,12 +93,9 @@ class PandaTeleop(Node):
             source_frame = self.get_parameter('end_effector_frame').get_parameter_value().string_value
             now = rclpy.time.Time()
             timeout = rclpy.duration.Duration(seconds=1.0)
-    
-            # Check if the transform is available
+
             if self.tf_buffer.can_transform(target_frame, source_frame, now, timeout):
-                # Look up the transform
                 transform = self.tf_buffer.lookup_transform(target_frame, source_frame, now)
-                # Convert the transform to a PoseStamped
                 self._end_effector_target.header.stamp = transform.header.stamp
                 self._end_effector_target.pose.position.x = transform.transform.translation.x
                 self._end_effector_target.pose.position.y = transform.transform.translation.y
@@ -116,12 +120,12 @@ class PandaTeleop(Node):
 
     def timer_callback(self):
         if not self.current_pose_received:
-            # Try to get the current pose again
             self.get_current_end_effector_pose()
             if not self.current_pose_received:
-                return  # Wait until we have the pose
+                self.get_logger().info('Waiting for current end-effector pose...')
+                return
             else:
-                # Save the pose as origin
+                # Save the current pose as origin for teleoperation
                 self._end_effector_target_origin = copy.deepcopy(self._end_effector_target)
                 self.get_logger().info('Teleoperation ready.')
         self.process_joy_input()
@@ -178,6 +182,23 @@ class PandaTeleop(Node):
             self._end_effector_target.pose.position.z,
             self._translation_limits[2][0],
             self._translation_limits[2][1]
+        )
+
+        # Ensure orientations are within limits
+        euler_target[0] = np.clip(
+            euler_target[0],
+            self._rotation_limits[0][0],
+            self._rotation_limits[0][1]
+        )
+        euler_target[1] = np.clip(
+            euler_target[1],
+            self._rotation_limits[1][0],
+            self._rotation_limits[1][1]
+        )
+        euler_target[2] = np.clip(
+            euler_target[2],
+            self._rotation_limits[2][0],
+            self._rotation_limits[2][1]
         )
 
         # Convert back to quaternion
