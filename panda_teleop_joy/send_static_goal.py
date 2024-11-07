@@ -1,38 +1,43 @@
+import sys
 import rclpy
 from rclpy.node import Node
-from rclpy.action import ActionClient
 from moveit_msgs.action import MoveGroup
-from geometry_msgs.msg import PoseStamped, Quaternion
+from geometry_msgs.msg import PoseStamped, Pose, Quaternion
 from tf_transformations import quaternion_from_euler
+from rclpy.action import ActionClient
 
 class StaticGoalSender(Node):
     def __init__(self):
         super().__init__('static_goal_sender')
-        self._action_client = ActionClient(self, MoveGroup, 'move_action')
+        self.move_action_client = ActionClient(self, MoveGroup, 'move_action')
+        self.get_logger().info('MoveGroup action client initialized.')
 
-    def send_goal(self):
-        self.get_logger().info('Waiting for MoveGroup action server...')
-        self._action_client.wait_for_server()
+    def send_static_goal(self):
+        # Wait for the action server to be available
+        if not self.move_action_client.wait_for_server(timeout_sec=5.0):
+            self.get_logger().error('MoveGroup action server not available. Ensure that MoveIt is running.')
+            return
 
+        # Create the MoveGroup goal
         goal_msg = MoveGroup.Goal()
-        goal_msg.request.workspace_parameters.header.frame_id = 'panda_link0'
 
-        # Define a target pose
-        target_pose = PoseStamped()
-        target_pose.header.frame_id = 'panda_link0'
-        target_pose.pose.position.x = 0.4
-        target_pose.pose.position.y = 0.0
-        target_pose.pose.position.z = 0.5
-        q = quaternion_from_euler(0, 0, 0)
-        target_pose.pose.orientation = Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
+        # Assign group_name and end_effector_name
+        goal_msg.request.group_name = 'panda_arm'          # Adjust if different
+        goal_msg.request.end_effector_name = 'panda_hand'  # Adjust if different
 
-        # Create constraints
+        # Populate the MotionPlanRequest
+        goal_msg.request.motion_plan_request.group_name = 'panda_arm'
+        goal_msg.request.motion_plan_request.num_planning_attempts = 5
+        goal_msg.request.motion_plan_request.allowed_planning_time = 5.0  # seconds
+        goal_msg.request.motion_plan_request.workspace_parameters.header.frame_id = 'panda_link0'
+
+        # Define goal constraints
         from moveit_msgs.msg import Constraints, PositionConstraint, OrientationConstraint
         from shape_msgs.msg import SolidPrimitive
 
         constraints = Constraints()
 
-        # Position constraint
+        # Position Constraint
         position_constraint = PositionConstraint()
         position_constraint.header.frame_id = 'panda_link0'
         position_constraint.link_name = 'panda_hand'
@@ -43,35 +48,49 @@ class StaticGoalSender(Node):
         # Define the bounding volume for position constraint
         bounding_volume = SolidPrimitive()
         bounding_volume.type = SolidPrimitive.BOX
-        bounding_volume.dimensions = [0.01, 0.01, 0.01]  # Small box around the target
+        bounding_volume.dimensions = [0.05, 0.05, 0.05]  # 5cm cube
 
         position_constraint.constraint_region.primitives.append(bounding_volume)
-        position_constraint.constraint_region.primitive_poses.append(target_pose.pose)
+        position_constraint.constraint_region.primitive_poses.append(self.create_target_pose())
         position_constraint.weight = 1.0
 
         constraints.position_constraints.append(position_constraint)
 
-        # Orientation constraint
+        # Orientation Constraint
         orientation_constraint = OrientationConstraint()
         orientation_constraint.header.frame_id = 'panda_link0'
         orientation_constraint.link_name = 'panda_hand'
-        orientation_constraint.orientation = target_pose.pose.orientation
-        orientation_constraint.absolute_x_axis_tolerance = 0.1
-        orientation_constraint.absolute_y_axis_tolerance = 0.1
-        orientation_constraint.absolute_z_axis_tolerance = 0.1
+        q = quaternion_from_euler(0, 0, 0)  # Neutral orientation
+        orientation_constraint.orientation = Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
+        orientation_constraint.absolute_x_axis_tolerance = 0.2
+        orientation_constraint.absolute_y_axis_tolerance = 0.2
+        orientation_constraint.absolute_z_axis_tolerance = 0.2
         orientation_constraint.weight = 1.0
 
         constraints.orientation_constraints.append(orientation_constraint)
 
-        goal_msg.request.goal_constraints.append(constraints)
-        goal_msg.request.num_planning_attempts = 5
-        goal_msg.request.allowed_planning_time = 2.0
-        goal_msg.request.max_velocity_scaling_factor = 0.1
-        goal_msg.request.max_acceleration_scaling_factor = 0.1
+        # Assign constraints to the goal
+        goal_msg.request.motion_plan_request.goal_constraints.append(constraints)
 
-        self.get_logger().info('Sending goal to MoveGroup...')
-        send_goal_future = self._action_client.send_goal_async(goal_msg)
+        # Set velocity and acceleration scaling factors
+        goal_msg.request.motion_plan_request.max_velocity_scaling_factor = 0.1
+        goal_msg.request.motion_plan_request.max_acceleration_scaling_factor = 0.1
+
+        # Send the goal
+        self.get_logger().info('Sending static goal to MoveGroup action server...')
+        send_goal_future = self.move_action_client.send_goal_async(goal_msg)
         send_goal_future.add_done_callback(self.goal_response_callback)
+
+    def create_target_pose(self):
+        pose = Pose()
+        pose.position.x = 0.4
+        pose.position.y = 0.0
+        pose.position.z = 0.5
+        pose.orientation.x = 0.0
+        pose.orientation.y = 0.0
+        pose.orientation.z = 0.0
+        pose.orientation.w = 1.0
+        return pose
 
     def goal_response_callback(self, future):
         goal_handle = future.result()
@@ -80,27 +99,29 @@ class StaticGoalSender(Node):
             return
 
         self.get_logger().info('Goal accepted by MoveGroup action server')
-        self._get_result_future = goal_handle.get_result_async()
-        self._get_result_future.add_done_callback(self.get_result_callback)
+        self.get_logger().info('Waiting for result...')
+
+        goal_handle.get_result_async().add_done_callback(self.get_result_callback)
 
     def get_result_callback(self, future):
         result = future.result().result
-        if result.error_code.val == result.error_code.SUCCESS:
+        error_code = result.error_code.val
+
+        if error_code == MoveGroup.Result.SUCCESS:
             self.get_logger().info('MoveGroup action succeeded!')
         else:
-            self.get_logger().error(f'MoveGroup action failed with error code: {result.error_code.val}')
+            self.get_logger().error(f'MoveGroup action failed with error code: {error_code}')
+
+    def destroy_node(self):
+        super().destroy_node()
 
 def main(args=None):
     rclpy.init(args=args)
     node = StaticGoalSender()
-    node.send_goal()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
+    node.send_static_goal()
+    rclpy.spin(node)
+    node.destroy_node()
+    rclpy.shutdown()
 
 if __name__ == '__main__':
     main()
