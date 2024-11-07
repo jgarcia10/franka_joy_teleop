@@ -8,7 +8,7 @@ from tf_transformations import quaternion_from_euler
 class StaticGoalSender(Node):
     def __init__(self):
         super().__init__('static_goal_sender')
-        self._action_client = ActionClient(self, MoveGroup, 'move_group')
+        self._action_client = ActionClient(self, MoveGroup, 'move_action')
 
     def send_goal(self):
         self.get_logger().info('Waiting for MoveGroup action server...')
