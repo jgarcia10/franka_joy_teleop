@@ -20,7 +20,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'panda_teleop_control = panda_teleop_joy.panda_teleop_control:main', 
+            'panda_teleop_control = panda_teleop_joy.panda_teleop_control:main',
+            'send_static_goal = panda_teleop_joy.send_static_goal:main',
         ],
     },
 )
