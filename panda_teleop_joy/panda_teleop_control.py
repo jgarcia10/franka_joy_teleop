@@ -33,8 +33,8 @@ def rpy2quat(euler, input_in_degrees=False):
     return Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
 
 class PandaTeleop(Node):
-    def _init_(self):
-        super()._init_('panda_teleop_control')
+    def __init__(self):
+        super().__init__('panda_teleop_control')
         self.get_logger().info('Initializing PandaTeleop node.')
 
         # Declare parameters
