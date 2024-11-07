@@ -7,12 +7,15 @@ from rclpy.action import ActionClient
 from moveit_msgs.action import MoveGroup
 from geometry_msgs.msg import PoseStamped, Quaternion
 from sensor_msgs.msg import Joy
-from tf_transformations import euler_from_quaternion, quaternion_from_euler
 import tf2_ros
+
+from moveit_msgs.msg import Constraints, PositionConstraint, OrientationConstraint
+from shape_msgs.msg import SolidPrimitive
 
 # Helper functions
 def quat2rpy(quaternion, degrees=False):
     """Convert quaternion to roll, pitch, yaw."""
+    from tf_transformations import euler_from_quaternion
     roll, pitch, yaw = euler_from_quaternion([
         quaternion.x,
         quaternion.y,
@@ -27,6 +30,7 @@ def quat2rpy(quaternion, degrees=False):
 
 def rpy2quat(euler, input_in_degrees=False):
     """Convert roll, pitch, yaw to quaternion."""
+    from tf_transformations import quaternion_from_euler
     if input_in_degrees:
         euler = np.radians(euler)
     q = quaternion_from_euler(*euler)
@@ -44,7 +48,6 @@ class PandaTeleop(Node):
                 ('base_frame', 'panda_link0'),          # Base frame of the robot
                 ('end_effector_frame', 'panda_hand'),   # End-effector frame
                 ('group_name', 'panda_arm'),            # Planning group name
-                # Removed 'end_effector_name' as it's unsupported
             ]
         )
 
@@ -53,9 +56,13 @@ class PandaTeleop(Node):
         self.end_effector_frame = self.get_parameter('end_effector_frame').value
         self.group_name = self.get_parameter('group_name').value
 
+        self.get_logger().debug(f"Parameters retrieved: base_frame={self.base_frame}, "
+                                f"end_effector_frame={self.end_effector_frame}, group_name={self.group_name}")
+
         # Initialize TF buffer and listener
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+        self.get_logger().debug("TF buffer and listener initialized.")
 
         # Flag to indicate if the current pose has been received
         self.current_pose_received = False
@@ -78,7 +85,7 @@ class PandaTeleop(Node):
             self.callback_joy,
             10
         )
-        self.get_logger().info('Created joystick subscriber.')
+        self.get_logger().info('Joystick subscriber created.')
 
         # Initialize MoveGroup action client
         self._action_client = ActionClient(self, MoveGroup, 'move_action')
@@ -88,11 +95,15 @@ class PandaTeleop(Node):
         self._translation_limits = [[-1.0, 1.0], [-1.0, 1.0], [0.0, 1.5]]  # x, y, z in meters
         self._rotation_limits = [[-180., 180.], [-180., 180.], [-180., 180.]]    # roll, pitch, yaw in degrees
 
+        self.get_logger().debug(f"Translation limits: {self._translation_limits}")
+        self.get_logger().debug(f"Rotation limits: {self._rotation_limits}")
+
         # Initialize the target pose origin (will be set once current pose is received)
         self._end_effector_target_origin = PoseStamped()
 
         # Create a timer for processing inputs and attempting to get the current pose
         self.timer = self.create_timer(0.1, self.timer_callback)  # Runs at 10 Hz
+        self.get_logger().debug("Timer for processing inputs created (10 Hz).")
 
     def get_current_end_effector_pose(self):
         """Retrieve the current pose of the end effector using TF."""
@@ -101,6 +112,8 @@ class PandaTeleop(Node):
             source_frame = self.end_effector_frame
             now = rclpy.time.Time()
             timeout = rclpy.duration.Duration(seconds=1.0)
+
+            self.get_logger().debug(f"Attempting to lookup transform from {source_frame} to {target_frame}.")
 
             if self.tf_buffer.can_transform(target_frame, source_frame, now, timeout):
                 transform = self.tf_buffer.lookup_transform(target_frame, source_frame, now)
@@ -111,6 +124,7 @@ class PandaTeleop(Node):
                 self._end_effector_target.pose.orientation = transform.transform.rotation
                 self.current_pose_received = True
                 self.get_logger().info('Current end-effector pose obtained from TF.')
+                self.get_logger().debug(f"Pose: {self._end_effector_target.pose}")
             else:
                 self.get_logger().warn(f'Transform from {source_frame} to {target_frame} not yet available.')
                 self.current_pose_received = False
@@ -124,8 +138,7 @@ class PandaTeleop(Node):
         """Callback function to handle joystick messages."""
         self.joy_axes = joy_msg.axes
         self.joy_buttons = joy_msg.buttons
-        self.get_logger().debug(f"Joystick axes: {self.joy_axes}")
-        self.get_logger().debug(f"Joystick buttons: {self.joy_buttons}")
+        self.get_logger().debug(f"Joystick message received: axes={self.joy_axes}, buttons={self.joy_buttons}")
 
     def timer_callback(self):
         """Timer callback to process joystick inputs and send goals."""
@@ -143,6 +156,7 @@ class PandaTeleop(Node):
     def process_joy_input(self):
         """Process joystick inputs to update the target pose."""
         if not self.joy_axes:
+            self.get_logger().debug('No joystick axes data to process.')
             return  # No joystick data yet
 
         # Define dead zone to prevent drift
@@ -154,10 +168,21 @@ class PandaTeleop(Node):
         right_stick_horizontal = self.joy_axes[3] if abs(self.joy_axes[3]) > dead_zone else 0.0 # Yaw rotation
         right_stick_vertical = self.joy_axes[4] if abs(self.joy_axes[4]) > dead_zone else 0.0   # Up/down
 
+        self.get_logger().debug(f"Processed joystick inputs after dead zone: "
+                                f"left_stick_horizontal={left_stick_horizontal}, "
+                                f"left_stick_vertical={left_stick_vertical}, "
+                                f"right_stick_horizontal={right_stick_horizontal}, "
+                                f"right_stick_vertical={right_stick_vertical}")
+
         # Buttons mapping (adjust indices if necessary)
         # Removed A button since it's for gripper control
-        b_button = self.joy_buttons[1]  # B button to return to home position
-
+        if len(self.joy_buttons) > 1:
+            b_button = self.joy_buttons[1]  # B button to return to home position
+            self.get_logger().debug(f"B button state: {b_button}")
+        else:
+            b_button = 0
+            self.get_logger().warn("Joystick message does not have a B button index.")
+        
         # Retrieve scaling factors (could be parameters)
         translation_speed = 0.01  # meters per update
         rotation_speed = 1.0      # degrees per update
@@ -219,9 +244,19 @@ class PandaTeleop(Node):
         quat = rpy2quat(euler_target, input_in_degrees=True)
         self._end_effector_target.pose.orientation = quat
 
+        self.get_logger().debug(f"Updated target pose: Position("
+                                f"{self._end_effector_target.pose.position.x:.3f}, "
+                                f"{self._end_effector_target.pose.position.y:.3f}, "
+                                f"{self._end_effector_target.pose.position.z:.3f}), "
+                                f"Orientation("
+                                f"{self._end_effector_target.pose.orientation.x:.3f}, "
+                                f"{self._end_effector_target.pose.orientation.y:.3f}, "
+                                f"{self._end_effector_target.pose.orientation.z:.3f}, "
+                                f"{self._end_effector_target.pose.orientation.w:.3f})")
+
         # Handle buttons
-        # Removed A button handling
         if b_button:
+            self.get_logger().info('B button pressed: Returning to home position.')
             self._home()
             return  # Don't send goal during homing
 
@@ -237,6 +272,7 @@ class PandaTeleop(Node):
         """Send the updated target pose to MoveIt for motion planning."""
         # Set the flag indicating a goal is in progress
         self.goal_in_progress = True
+        self.get_logger().debug("Goal in progress flag set to True.")
 
         # Retrieve parameters
         group_name = self.group_name  # 'panda_arm'
@@ -246,31 +282,32 @@ class PandaTeleop(Node):
         goal_msg.request.group_name = group_name
 
         # Populate the MotionPlanRequest
-        goal_msg.request.num_planning_attempts = 5
-        goal_msg.request.allowed_planning_time = 5.0  # seconds
-        goal_msg.request.workspace_parameters.header.frame_id = self.base_frame
+        goal_msg.request.motion_plan_request.group_name = group_name
+        goal_msg.request.motion_plan_request.num_planning_attempts = 5
+        goal_msg.request.motion_plan_request.allowed_planning_time = 5.0  # seconds
+        goal_msg.request.motion_plan_request.workspace_parameters.header.frame_id = self.base_frame
 
         # Define goal constraints
         constraints = self.create_position_orientation_constraints()
-        goal_msg.request.goal_constraints.append(constraints)
+        goal_msg.request.motion_plan_request.goal_constraints.append(constraints)
 
         # Set velocity and acceleration scaling factors
-        goal_msg.request.max_velocity_scaling_factor = 0.1
-        goal_msg.request.max_acceleration_scaling_factor = 0.1
+        goal_msg.request.motion_plan_request.max_velocity_scaling_factor = 0.1
+        goal_msg.request.motion_plan_request.max_acceleration_scaling_factor = 0.1
 
         # Optionally, set the planner ID (e.g., 'RRTConnectkConfigDefault')
         # goal_msg.request.motion_plan_request.planner_id = 'RRTConnectkConfigDefault'
 
         # Debug: Log the target pose
         self.get_logger().debug(f"Target pose being sent: Position("
-                                f"{self._end_effector_target.pose.position.x}, "
-                                f"{self._end_effector_target.pose.position.y}, "
-                                f"{self._end_effector_target.pose.position.z}), "
+                                f"{self._end_effector_target.pose.position.x:.3f}, "
+                                f"{self._end_effector_target.pose.position.y:.3f}, "
+                                f"{self._end_effector_target.pose.position.z:.3f}), "
                                 f"Orientation("
-                                f"{self._end_effector_target.pose.orientation.x}, "
-                                f"{self._end_effector_target.pose.orientation.y}, "
-                                f"{self._end_effector_target.pose.orientation.z}, "
-                                f"{self._end_effector_target.pose.orientation.w})")
+                                f"{self._end_effector_target.pose.orientation.x:.3f}, "
+                                f"{self._end_effector_target.pose.orientation.y:.3f}, "
+                                f"{self._end_effector_target.pose.orientation.z:.3f}, "
+                                f"{self._end_effector_target.pose.orientation.w:.3f})")
 
         # Send the goal
         self.get_logger().info('Sending goal to MoveGroup...')
@@ -279,9 +316,6 @@ class PandaTeleop(Node):
 
     def create_position_orientation_constraints(self):
         """Create position and orientation constraints based on the target pose."""
-        from moveit_msgs.msg import Constraints, PositionConstraint, OrientationConstraint
-        from shape_msgs.msg import SolidPrimitive
-
         constraints = Constraints()
 
         # Position Constraint
@@ -315,59 +349,82 @@ class PandaTeleop(Node):
 
         constraints.orientation_constraints.append(orientation_constraint)
 
+        self.get_logger().debug(f"Constraints created: {constraints}")
         return constraints
 
     def goal_response_callback(self, future):
         """Handle the response from the MoveGroup action server."""
-        goal_handle = future.result()
-        if not goal_handle.accepted:
-            self.get_logger().error('Goal rejected by MoveGroup action server')
+        try:
+            goal_handle = future.result()
+        except Exception as e:
+            self.get_logger().error(f"MoveGroup goal response failed: {e}")
             self.goal_in_progress = False
             return
 
-        self.get_logger().info('Goal accepted by MoveGroup action server')
+        if not goal_handle.accepted:
+            self.get_logger().error('Goal rejected by MoveGroup action server.')
+            self.goal_in_progress = False
+            return
 
+        self.get_logger().info('Goal accepted by MoveGroup action server.')
+        self.get_logger().debug('Waiting for goal result...')
         self._get_result_future = goal_handle.get_result_async()
         self._get_result_future.add_done_callback(self.get_result_callback)
 
     def get_result_callback(self, future):
         """Handle the result from the MoveGroup action server."""
-        result = future.result().result
-        error_code_val = result.error_code.val
+        try:
+            result = future.result().result
+            error_code_val = result.error_code.val
 
-        # Reference MoveIt error codes
-        # SUCCESS = 1
-        # FAILURE = 99999
-        # And others as per MoveIt documentation
+            # Reference MoveIt error codes
+            # SUCCESS = 1
+            # FAILURE = 99999
+            # And others as per MoveIt documentation
 
-        if error_code_val == 1:  # SUCCESS
-            self.get_logger().info('MoveGroup action succeeded!')
-        else:
-            self.get_logger().error(f'MoveGroup action failed with error code: {error_code_val}')
-
-        # Reset the goal_in_progress flag
-        self.goal_in_progress = False
+            if error_code_val == 1:  # SUCCESS
+                self.get_logger().info('MoveGroup action succeeded!')
+            else:
+                self.get_logger().error(f'MoveGroup action failed with error code: {error_code_val}')
+        except Exception as e:
+            self.get_logger().error(f'Error in getting MoveGroup action result: {e}')
+        finally:
+            # Reset the goal_in_progress flag regardless of success or failure
+            self.goal_in_progress = False
+            self.get_logger().debug('Goal in progress flag reset to False.')
 
     def _home(self):
         """Return the end effector to the initial pose."""
+        self.get_logger().info('Returning to home position.')
         # Set the target pose to the home position (initial position)
         self._end_effector_target = copy.deepcopy(self._end_effector_target_origin)
         self._end_effector_target.header.stamp = self.get_clock().now().to_msg()
+        # Log the home pose
+        self.get_logger().debug(f"Home pose: Position("
+                                f"{self._end_effector_target.pose.position.x:.3f}, "
+                                f"{self._end_effector_target.pose.position.y:.3f}, "
+                                f"{self._end_effector_target.pose.position.z:.3f}), "
+                                f"Orientation("
+                                f"{self._end_effector_target.pose.orientation.x:.3f}, "
+                                f"{self._end_effector_target.pose.orientation.y:.3f}, "
+                                f"{self._end_effector_target.pose.orientation.z:.3f}, "
+                                f"{self._end_effector_target.pose.orientation.w:.3f})")
         # Send the target pose to MoveIt
         self.send_goal_to_moveit()
 
     def destroy_node(self):
         """Clean up before shutting down the node."""
+        self.get_logger().info('Shutting down PandaTeleop node.')
         super().destroy_node()
 
 def main(args=None):
     rclpy.init(args=args)
     node = PandaTeleop()
-    node.get_logger().info('PandaTeleop node has been created.')
+    node.get_logger().info('PandaTeleop node has been created and is spinning.')
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        pass
+        node.get_logger().info('KeyboardInterrupt received. Shutting down.')
     finally:
         node.destroy_node()
         rclpy.shutdown()
