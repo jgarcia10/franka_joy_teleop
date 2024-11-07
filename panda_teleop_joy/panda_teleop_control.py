@@ -282,18 +282,17 @@ class PandaTeleop(Node):
         goal_msg.request.group_name = group_name
 
         # Populate the MotionPlanRequest
-        goal_msg.request.motion_plan_request.group_name = group_name
-        goal_msg.request.motion_plan_request.num_planning_attempts = 5
-        goal_msg.request.motion_plan_request.allowed_planning_time = 5.0  # seconds
-        goal_msg.request.motion_plan_request.workspace_parameters.header.frame_id = self.base_frame
+        goal_msg.request.num_planning_attempts = 5
+        goal_msg.request.allowed_planning_time = 5.0  # seconds
+        goal_msg.request.workspace_parameters.header.frame_id = self.base_frame
 
         # Define goal constraints
         constraints = self.create_position_orientation_constraints()
-        goal_msg.request.motion_plan_request.goal_constraints.append(constraints)
+        goal_msg.request.goal_constraints.append(constraints)
 
         # Set velocity and acceleration scaling factors
-        goal_msg.request.motion_plan_request.max_velocity_scaling_factor = 0.1
-        goal_msg.request.motion_plan_request.max_acceleration_scaling_factor = 0.1
+        goal_msg.request.max_velocity_scaling_factor = 0.1
+        goal_msg.request.max_acceleration_scaling_factor = 0.1
 
         # Optionally, set the planner ID (e.g., 'RRTConnectkConfigDefault')
         # goal_msg.request.motion_plan_request.planner_id = 'RRTConnectkConfigDefault'
