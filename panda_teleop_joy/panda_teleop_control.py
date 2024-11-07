@@ -41,14 +41,25 @@ class PandaTeleop(Node):
         self.declare_parameters(
             namespace='',
             parameters=[
-                ('base_frame', 'panda_link0'),
-                ('end_effector_frame', 'panda_hand'),
+                ('base_frame', 'panda_link0'),        # Base frame of the robot
+                ('end_effector_frame', 'panda_hand'), # End-effector frame
             ]
         )
 
         # Initialize TF buffer and listener
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+
+        # Flag to indicate if the current pose has been received
+        self.current_pose_received = False
+
+        # Initialize the target pose (will be set once we receive the current pose)
+        self._end_effector_target: PoseStamped = PoseStamped()
+        self._end_effector_target.header.frame_id = self.get_parameter('base_frame').get_parameter_value().string_value
+
+        # Initialize joystick variables
+        self.joy_axes = []
+        self.joy_buttons = []
 
         # Create joystick subscriber
         self._joy_subscriber = self.create_subscription(
@@ -62,35 +73,12 @@ class PandaTeleop(Node):
         # Create a service client for actuating the gripper
         self._actuate_gripper_client: Client = self.create_client(Empty, 'actuate_gripper')
 
-        # Initialize variables
-        self.joy_axes = []
-        self.joy_buttons = []
-
-        # Initialize the target pose
-        self._end_effector_target: PoseStamped = PoseStamped()
-        self._end_effector_target.header.frame_id = self.get_parameter('base_frame').get_parameter_value().string_value
-
-        # Flag to check if we have received the current pose
-        self.current_pose_received = False
-
-        # Check if the pose was received
-        if not self.current_pose_received:
-            self.get_logger().error('Could not obtain current end-effector pose. Exiting.')
-            exit(1)
-
-        # Save the current pose as the origin
-        self._end_effector_target_origin = copy.deepcopy(self._end_effector_target)
-
-        # Translation and rotation limits
-        self._translation_limits = [[-1.0, 1.0], [-1.0, 1.0], [0.0, 1.5]]  # x, y, z in meters
-        self._rotation_limits = [[-180., 180.], [-180., 180.], [-180., 180.]]    # roll, pitch, yaw in degrees
-
         # Initialize MoveGroup action client
         self._action_client = ActionClient(self, MoveGroup, 'move_action')
         self.get_logger().info('MoveGroup action client initialized.')
 
-        # Create timer for processing inputs
-        self.timer = self.create_timer(0.1, self.timer_callback)  # 10 Hz
+        # Create a timer for processing inputs and attempting to get the current pose
+        self.timer = self.create_timer(0.1, self.timer_callback)  # Runs at 10 Hz
 
     def get_current_end_effector_pose(self):
         try:
